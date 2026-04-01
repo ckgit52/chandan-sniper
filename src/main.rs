@@ -2,7 +2,9 @@ use tokio::signal;
 
 mod listener;
 
-use listener::logs_listener::start_listener;
+// use listener::logs_listener::start_listener;//
+use listener::ws_listener::start_listener;
+
 
 #[tokio::main]
 async fn main() {
