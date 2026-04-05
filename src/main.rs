@@ -1,23 +1,37 @@
 use tokio::signal;
+use dotenv::dotenv;
 
+mod filters;
 mod listener;
+mod notifier;
+mod trader;
+mod strategy;
+mod config;
+mod wallet;
+mod utils;
 
-// use listener::logs_listener::start_listener;//
-use listener::ws_listener::start_listener;
-
+use listener::ws_listener::start_ws_listener;
 
 #[tokio::main]
 async fn main() {
+    // Load environment variables
+    dotenv().ok();
+    
     println!("🚀 Sniper bot starting...");
+    println!("🚀 Listening for new tokens...\n");
 
-    // start listener
+    // Start WebSocket listener
     tokio::spawn(async {
-        start_listener().await;
+        start_ws_listener().await;
     });
 
-    println!("🚀 Listening for new slots (blocks)...");
-
-    // Keep program alive
-    signal::ctrl_c().await.unwrap();
-    println!("🛑 Shutting down...");
+    // Keep program alive until Ctrl+C
+    match signal::ctrl_c().await {
+        Ok(()) => {
+            println!("\n🛑 Shutting down...");
+        }
+        Err(err) => {
+            eprintln!("⚠️ Error listening for Ctrl+C: {}", err);
+        }
+    }
 }

@@ -2,13 +2,11 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 
-/// Analyze a transaction by its signature
 pub async fn analyze_transaction(signature: String) {
     let rpc_url = "https://api.mainnet-beta.solana.com";
     let client = Client::new();
 
-    // Retry up to 5 times
-    for attempt in 0..5 {
+    for _ in 0..6 {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -16,7 +14,7 @@ pub async fn analyze_transaction(signature: String) {
             "params": [
                 signature,
                 {
-                    "encoding": "jsonParsed",
+                    "encoding": "json",
                     "maxSupportedTransactionVersion": 0
                 }
             ]
@@ -25,101 +23,66 @@ pub async fn analyze_transaction(signature: String) {
         let resp = client.post(rpc_url).json(&body).send().await;
 
         if resp.is_err() {
-            eprintln!("⚠️ Attempt {}: RPC request failed for {}", attempt + 1, signature);
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1000)).await;
             continue;
         }
 
         let json: Value = resp.unwrap().json().await.unwrap();
 
         if json["result"].is_null() {
-            if cfg!(debug_assertions) {
-                println!("ℹ️ Attempt {}: Transaction not found yet: {}", attempt + 1, signature);
-            }
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1000)).await;
             continue;
         }
 
-        let instructions = &json["result"]["transaction"]["message"]["instructions"];
+        let tx = &json["result"]["transaction"]["message"];
 
-        if instructions.is_null() {
-            if cfg!(debug_assertions) {
-                println!("ℹ️ No instructions in transaction: {}", signature);
+        let empty_vec = vec![];
+        let account_keys = tx["accountKeys"].as_array().unwrap_or(&empty_vec);
+
+        let empty_vec = vec![];
+        let instructions = tx["instructions"].as_array().unwrap_or(&empty_vec);
+
+        let mut found = false;
+
+        for ix in instructions {
+            // programIdIndex tells which program is used
+            let program_idx = ix["programIdIndex"].as_u64().unwrap_or(999) as usize;
+
+            if program_idx >= account_keys.len() {
+                continue;
             }
-            return;
-        }
 
-        let mut new_mint: Option<String> = None;
+            let program = account_keys[program_idx].as_str().unwrap_or("");
 
-        if let Some(ixs) = instructions.as_array() {
-            println!("📌 Inspecting {} instructions for transaction {}", ixs.len(), signature);
+            // Token Program check
+            if program != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" {
+                continue;
+            }
 
-            for (idx, ix) in ixs.iter().enumerate() {
-                if let Some(parsed) = ix.get("parsed") {
-                    if let Some(t) = parsed.get("type").and_then(|v| v.as_str()) {
-                        if t == "initializeMint" || t == "initializeMint2" {
-                            if let Some(mint) = parsed["info"]["mint"].as_str() {
-                                new_mint = Some(mint.to_string());
-                                println!(
-                                    "🎯 Instruction {}: Detected new mint {} (type: {})",
-                                    idx, mint, t
-                                );
-                            }
-                        } else if cfg!(debug_assertions) {
-                            println!(
-                                "ℹ️ Instruction {}: Type {} (not a mint)",
-                                idx, t
-                            );
-                        }
+            // 🔥 For InitializeMint, mint account is usually first account
+            if let Some(accounts) = ix["accounts"].as_array() {
+                if !accounts.is_empty() {
+                    let mint_idx = accounts[0].as_u64().unwrap_or(999) as usize;
+
+                    if mint_idx < account_keys.len() {
+                        let mint = account_keys[mint_idx].as_str().unwrap_or("N/A");
+
+                        println!("\n==============================");
+                        println!("🚨 NEW TOKEN DETECTED (RAW)");
+                        println!("🔗 Signature: {}", signature);
+                        println!("🪙 Mint: {}", mint);
+                        println!("==============================\n");
+
+                        found = true;
                     }
-                } else if cfg!(debug_assertions) {
-                    println!("ℹ️ Instruction {} has no parsed field", idx);
                 }
             }
         }
 
-        if let Some(mint) = new_mint {
-            println!("\n==============================");
-            println!("🚨 NEW TOKEN DETECTED");
-            println!("🪙 Mint: {}", mint);
-
-            // 🔥 Fetch metadata
-            fetch_token_metadata(&client, &mint).await;
-
-            println!("==============================\n");
-        } else if cfg!(debug_assertions) {
-            println!("ℹ️ No mint instructions found in transaction: {}", signature);
+        if !found {
+            println!("⚠️ Could not decode mint (raw fallback): {}", signature);
         }
 
         return;
     }
-}
-
-/// Fetch token metadata from Dexscreener
-pub async fn fetch_token_metadata(client: &Client, mint: &str) {
-    let url = format!("https://api.dexscreener.com/latest/dex/tokens/{}", mint);
-
-    let resp = client.get(&url).send().await;
-
-    if resp.is_err() {
-        println!("⚠️ Metadata fetch failed for {}", mint);
-        return;
-    }
-
-    let json: Value = resp.unwrap().json().await.unwrap();
-
-    if json["pairs"].is_null() || json["pairs"].as_array().unwrap_or(&vec![]).is_empty() {
-        println!("⚠️ No metadata found yet for mint {}", mint);
-        return;
-    }
-
-    let pair = &json["pairs"][0];
-
-    let name = pair["baseToken"]["name"].as_str().unwrap_or("N/A");
-    let symbol = pair["baseToken"]["symbol"].as_str().unwrap_or("N/A");
-    let price = pair["priceUsd"].as_str().unwrap_or("N/A");
-
-    println!("📛 Name: {}", name);
-    println!("🔤 Symbol: {}", symbol);
-    println!("💲 Price: {}", price);
 }
